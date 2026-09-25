@@ -96,7 +96,7 @@ tr.click:hover{background:#f7f9fb;}
    Paste your project's URL and anon (public) key here. Both are safe to expose in client-side
    code — the anon key only grants what the Row Level Security policies in supabase-schema.sql
    allow. Leave the placeholders as-is to keep running in local (single-browser) mode. */
-const SUPABASE_URL = "https://obpfsgpgooxqkiagtwrn.supabase.co/rest/v1/";
+const SUPABASE_URL = "https://obpfsgpgooxqkiagtwrn.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9icGZzZ3Bnb294cWtpYWd0d3JuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAzMjkyMzAsImV4cCI6MjEwNTkwNTIzMH0.P53Ig_FD07Dh0YPnifmGReK_GbzYmEc6qk3jxb3Piq0";
 function supabaseConfigured(){ return SUPABASE_URL && !SUPABASE_URL.startsWith("YOUR_") && SUPABASE_ANON_KEY && !SUPABASE_ANON_KEY.startsWith("YOUR_"); }
 
