@@ -76,6 +76,7 @@ tr.click:hover{background:#f7f9fb;}
 .act{font-size:12px;color:var(--muted);border-left:2px solid var(--border);padding-left:10px;margin-bottom:6px;}
 .stack{display:flex;flex-direction:column;gap:2px;}
 .locked{font-size:11px;color:var(--muted);}
+.localnotice{background:#eef4fb;border:1px solid #c9dcef;color:#1c3d5a;border-radius:6px;padding:9px 14px;font-size:12.5px;margin-bottom:16px;}
 </style>
 </head>
 <body>
@@ -213,10 +214,79 @@ function isAdmin(){ return me.canEdit === true; }
 function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 2200); }
 function esc(s){ return (s==null?"":String(s)).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
+/* ---------- Standalone fallback data layer ----------
+   The db/user capabilities used above only resolve inside Claude's artifact runtime. When this
+   file is hosted on its own (GitHub Pages, a plain web server, opened as a local file), that
+   runtime doesn't exist, so this implements the same interface — doc/collection with
+   onSnapshot/get/set/update/add — backed by the browser's own localStorage. It keeps the app
+   fully working for one person in one browser; it does not sync between browsers or devices,
+   which is why localMode shows a visible notice rather than pretending to be a shared system. */
+let localMode = false;
+class LocalDB{
+  constructor(){ this._listeners = []; this._load(); }
+  _load(){ try{ this.state = JSON.parse(localStorage.getItem('ncf_local_db')) || {docs:{},cols:{}}; } catch(e){ this.state = {docs:{},cols:{}}; } }
+  _save(){ localStorage.setItem('ncf_local_db', JSON.stringify(this.state)); this._listeners.forEach(fn=>fn()); }
+  doc(path){
+    const self = this;
+    return {
+      onSnapshot(cb, errcb){
+        const fire = () => { try{ const raw = self.state.docs[path]; cb({exists: raw!==undefined, data:()=>raw}); } catch(e){ if(errcb) errcb(e); } };
+        fire(); self._listeners.push(fire);
+        return () => { self._listeners = self._listeners.filter(f=>f!==fire); };
+      },
+      async get(){ const raw = self.state.docs[path]; return {exists: raw!==undefined, data:()=>raw}; },
+      async set(obj){ self.state.docs[path] = obj; self._save(); },
+      async update(patch){ self.state.docs[path] = {...(self.state.docs[path]||{}), ...patch}; self._save(); },
+      async delete(){ delete self.state.docs[path]; self._save(); }
+    };
+  }
+  collection(name){
+    const self = this;
+    if(!self.state.cols[name]) self.state.cols[name] = [];
+    return {
+      _orderField:null, _orderDir:'asc', _limitN:null,
+      async add(obj){ const id = 'id_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+        self.state.cols[name].push({id, ...obj}); self._save(); return {id}; },
+      doc(id){ return {
+        async get(){ const row = self.state.cols[name].find(r=>r.id===id); return {exists:!!row, id, data:()=>{ if(!row) return undefined; const {id:_,...rest}=row; return rest; }}; },
+        async update(patch){ const arr = self.state.cols[name]; const i = arr.findIndex(r=>r.id===id); if(i>=0){ arr[i] = {...arr[i], ...patch}; self._save(); } },
+        async delete(){ self.state.cols[name] = self.state.cols[name].filter(r=>r.id!==id); self._save(); }
+      };},
+      orderBy(field,dir){ this._orderField=field; this._orderDir=dir||'asc'; return this; },
+      limit(n){ this._limitN=n; return this; },
+      where(){ return this; },
+      onSnapshot(cb, errcb){
+        const fire = () => {
+          try{
+            let rows = [...self.state.cols[name]];
+            if(this._orderField){ const f=this._orderField, dir=this._orderDir; rows.sort((a,b)=> dir==='desc' ? (a[f]<b[f]?1:a[f]>b[f]?-1:0) : (a[f]>b[f]?1:a[f]<b[f]?-1:0)); }
+            if(this._limitN) rows = rows.slice(0, this._limitN);
+            cb({ docs: rows.map(r=>({ id:r.id, data:()=>{ const {id,...rest}=r; return rest; } })) });
+          } catch(e){ if(errcb) errcb(e); }
+        };
+        fire(); self._listeners.push(fire);
+        return () => { self._listeners = self._listeners.filter(f=>f!==fire); };
+      }
+    };
+  }
+}
+class LocalUser{
+  async me(){
+    let id = localStorage.getItem('ncf_local_uid');
+    if(!id){ id = 'local_'+Math.random().toString(36).slice(2,10); localStorage.setItem('ncf_local_uid', id); }
+    const name = localStorage.getItem('ncf_local_name') || 'Administrator';
+    return { id, name, canEdit:true };
+  }
+}
+
 async function boot(){
-  db = await claude.use("db");
-  userCap = await claude.use("user");
-  if(!db){ document.getElementById('app').innerHTML = '<div class="empty">This system requires the shared data store capability, which is not available in this view.</div>'; return; }
+  const inClaudeRuntime = (typeof claude !== 'undefined') && claude && typeof claude.use === 'function';
+  if(inClaudeRuntime){
+    try{ db = await claude.use("db"); } catch(e){ console.error('db capability unavailable', e); }
+    try{ userCap = await claude.use("user"); } catch(e){ console.error('user capability unavailable', e); }
+  }
+  if(!db){ localMode = true; db = new LocalDB(); }
+  if(!userCap){ userCap = new LocalUser(); }
   if(userCap){ try { me = await userCap.me(); } catch(e){ console.error('Failed to resolve viewer identity', e); } }
   subscribeSettings();
   db.collection('applications').orderBy('createdAt','desc').limit(300).onSnapshot(s=>{ apps = s.docs.map(d=>({id:d.id,...d.data()})); render(); },
@@ -271,7 +341,8 @@ function render(){
   const el = document.getElementById('app');
   const pages = { dashboard:pageDashboard, applications:pageApplications, newapp:pageNewApp, detail:pageDetail,
     customers:pageCustomers, settings:pageSettings };
-  el.innerHTML = (pages[route]||pageDashboard)();
+  const notice = localMode ? `<div class="localnotice">Running in local mode: data is stored only in this browser and is not shared with other users or devices. Connect a real backend to run this for a team.</div>` : "";
+  el.innerHTML = notice + (pages[route]||pageDashboard)();
   wire();
 }
 
